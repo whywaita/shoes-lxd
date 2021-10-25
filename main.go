@@ -160,9 +160,6 @@ func parseAlias(input string) (api.InstanceSource, error) {
 		urlImageServer := fmt.Sprintf("%s://%s", u.Scheme, u.Host)
 		alias := strings.TrimPrefix(u.Path, "/")
 
-		fmt.Println(urlImageServer)
-		fmt.Println(alias)
-
 		return api.InstanceSource{
 			Type:   "image",
 			Mode:   "pull",
@@ -215,7 +212,9 @@ lxc.cap.drop=`
 
 	client, found := l.isExistInstance(instanceName)
 	if !found {
-		client = l.scheduleHost().client
+		host := l.scheduleHost()
+		fmt.Printf("AddInstance scheduled host: %s\n", host.config.lxdHost)
+		client = host.client
 
 		source, err := parseAlias(os.Getenv(EnvLXDImageAlias))
 		if err != nil {
