@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -213,7 +214,7 @@ lxc.cap.drop=`
 	client, found := l.isExistInstance(instanceName)
 	if !found {
 		host := l.scheduleHost()
-		fmt.Printf("AddInstance scheduled host: %s\n", host.config.lxdHost)
+		log.Printf("AddInstance scheduled host: %s\n", host.config.lxdHost)
 		client = host.client
 
 		source, err := parseAlias(os.Getenv(EnvLXDImageAlias))
@@ -302,28 +303,67 @@ func New(hc []hostConfig, m map[pb.ResourceType]Mapping) (*LXDClient, error) {
 	var hosts []LXDHost
 
 	for _, h := range hc {
-		args := &lxd.ConnectionArgs{
-			UserAgent:          "shoes-lxd",
-			TLSClientCert:      h.lxdClientCert,
-			TLSClientKey:       h.lxdClientKey,
-			InsecureSkipVerify: true,
-		}
-
-		conn, err := lxd.ConnectLXD(h.lxdHost, args)
-		if err != nil {
-			return nil, err
+		conn, err := connectLXDWithTimeout(h.lxdHost, h.lxdClientCert, h.lxdClientKey)
+		if err != nil && !errors.Is(err, ErrTimeoutConnectLXD) {
+			return nil, fmt.Errorf("failed to connect LXD with timeout: %w", err)
+		} else if errors.Is(err, ErrTimeoutConnectLXD) {
+			log.Printf("failed to connect LXD, So ignore host (host: %s)\n", h.lxdHost)
+			continue
 		}
 
 		hosts = append(hosts, LXDHost{
-			client: conn,
+			client: *conn,
 			config: h,
 		})
+	}
+
+	if len(hosts) == 0 {
+		return nil, fmt.Errorf("not enough LXD servers, can't connect all servers")
 	}
 
 	return &LXDClient{
 		hosts:           hosts,
 		resourceMapping: m,
 	}, nil
+}
+
+var (
+	ErrTimeoutConnectLXD = fmt.Errorf("timeout of ConnectLXD")
+)
+
+func connectLXDWithTimeout(host, clientCert, clientKey string) (*lxd.InstanceServer, error) {
+	type resultConnectLXD struct {
+		client lxd.InstanceServer
+		err    error
+	}
+
+	resultCh := make(chan resultConnectLXD, 1)
+	go func() {
+		args := &lxd.ConnectionArgs{
+			UserAgent:          "shoes-lxd",
+			TLSClientCert:      clientCert,
+			TLSClientKey:       clientKey,
+			InsecureSkipVerify: true,
+		}
+
+		client, err := lxd.ConnectLXD(host, args)
+		resultCh <- resultConnectLXD{
+			client: client,
+			err:    err,
+		}
+	}()
+
+	select {
+	case result := <-resultCh:
+		if result.err != nil {
+			return nil, fmt.Errorf("failed to connect LXD: %w", result.err)
+		}
+		return &result.client, nil
+	case <-time.After(2 * time.Second):
+		// This block occurred goroutine leak when timeout. But shoes-lxd is short range. maybe safety.
+		// lxd.ConnectLXD() is not support context.Context yet. need to refactor it after support context.Context.
+		return nil, ErrTimeoutConnectLXD
+	}
 }
 
 func loadConfig() ([]hostConfig, map[pb.ResourceType]Mapping, error) {
