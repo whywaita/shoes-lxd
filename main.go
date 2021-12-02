@@ -239,6 +239,23 @@ lxc.cap.drop=`
 		}
 	}
 
+	var err error
+	err = nil
+
+	defer func(instanceName string, client lxd.InstanceServer) {
+		if err != nil {
+			op, err := client.DeleteInstance(instanceName)
+			if err != nil {
+				fmt.Printf("failed to delete instance (name: %s): %+v\n", instanceName, err)
+				return
+			}
+			if err := op.Wait(); err != nil {
+				fmt.Printf("failed to wait deleting instance (name: %s): %+v\n", instanceName, err)
+				return
+			}
+		}
+	}(instanceName, client)
+
 	reqState := api.InstanceStatePut{
 		Action:  "start",
 		Timeout: -1,
@@ -272,7 +289,7 @@ func (l LXDClient) DeleteInstance(ctx context.Context, req *pb.DeleteInstanceReq
 
 	client, found := l.isExistInstance(instanceName)
 	if !found {
-		return nil, status.Errorf(codes.InvalidArgument, "failed to found worker that has %s", instanceName)
+		return nil, status.Errorf(codes.NotFound, "failed to found worker that has %s", instanceName)
 	}
 
 	reqState := api.InstanceStatePut{
